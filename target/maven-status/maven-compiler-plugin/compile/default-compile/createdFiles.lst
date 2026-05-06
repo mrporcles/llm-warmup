@@ -1,5 +1,0 @@
-com/cfgenai/llmapp/LLMBatchApplication.class
-com/cfgenai/llmapp/service/LLMExecutionResult.class
-com/cfgenai/llmapp/service/LLMServiceClient.class
-com/cfgenai/llmapp/service/CloudFoundryServiceConfig.class
-com/cfgenai/llmapp/health/LLMServiceHealthIndicator.class
