@@ -1,0 +1,33 @@
+---
+applications:
+- name: llm-warmup
+  memory: 1G
+  instances: 1
+
+  buildpack: java_buildpack_offline
+  path: target/llm-warmup.jar
+  # Health check for long-running app
+  health-check-type: http
+  health-check-http-endpoint: /actuator/health
+  health-check-invocation-timeout: 60
+  # Keep the app running continuously
+  # no-route: true  # Uncomment if you don't need external access
+
+  env:
+    # Java 21 VM options with modern JVM features
+    JBP_CONFIG_OPEN_JDK_JRE: '{ jre: { version: 21.+ } }'
+    JAVA_OPTS: "-Xmx768m -XX:MaxMetaspaceSize=128m"
+    
+    # Prompt to execute (customize as needed)
+    LLM_PROMPT: "Hello! Please provide a brief introduction about yourself and your capabilities."
+    
+    # LLM parameters
+    LLM_TEMPERATURE: "0.7"
+    LLM_MAX_TOKENS: "500"
+    
+    # Execution interval in seconds (default: 300 = 5 minutes)
+    EXECUTION_INTERVAL_SECONDS: "300"
+    
+    # Spring Boot configuration
+    SPRING_PROFILES_ACTIVE: "cloud"
+    

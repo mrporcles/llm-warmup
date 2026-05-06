@@ -1,0 +1,60 @@
+# Spring Boot 4.0.6 Configuration for LLM Batch Application
+
+spring:
+  application:
+    name: llm-warmup
+  
+  # Enable minimal web server for health checks
+  main:
+    web-application-type: servlet
+    banner-mode: off
+  
+  # Task execution configuration
+  task:
+    scheduling:
+      pool:
+        size: 2
+  
+  # Modern WebClient configuration
+  webflux:
+    multipart:
+      max-in-memory-size: 1MB
+  
+  # Enhanced logging configuration for Spring Boot 4.x
+  logging:
+    pattern:
+      console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+      file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    level:
+      com.cfgenai: INFO
+      org.springframework: WARN
+      org.apache.catalina: WARN
+      org.hibernate: WARN
+      reactor.netty: WARN
+      io.netty: WARN
+      root: INFO
+    
+
+# Application configuration
+app:
+  execution:
+    # Execution interval in milliseconds (default: 300000ms = 5 minutes)
+    # Override with EXECUTION_INTERVAL_SECONDS environment variable
+    interval: ${EXECUTION_INTERVAL_SECONDS:300}000
+
+# Management endpoints configuration (following Baeldung guide)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,scheduledtasks
+      base-path: /actuator
+  endpoint:
+    health:
+      enabled: true
+      show-details: always
+      show-components: always
+
+# Server configuration
+server:
+  port: ${PORT:8080}
