@@ -138,6 +138,29 @@ public class CloudFoundryServiceConfig {
     private void logCredentialFields() {
         if (serviceCredentials != null && !serviceCredentials.isEmpty()) {
             logger.info("Available credential fields: [{}]", String.join(", ", serviceCredentials.keySet()));
+            
+            // Log the structure of each credential field for debugging both old and new formats
+            for (Map.Entry<String, Object> entry : serviceCredentials.entrySet()) {
+                Object value = entry.getValue();
+                if (value instanceof String) {
+                    logger.info("Credential '{}': {} (String)", entry.getKey(), maskCredentialValue(entry.getKey(), (String) value));
+                } else if (value instanceof Map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> nestedMap = (Map<String, Object>) value;
+                    logger.info("Credential '{}': nested object with fields [{}]", entry.getKey(), String.join(", ", nestedMap.keySet()));
+                    
+                    // Show nested field values too
+                    for (Map.Entry<String, Object> nestedEntry : nestedMap.entrySet()) {
+                        logger.info("  {}.{}: {} ({})", entry.getKey(), nestedEntry.getKey(), 
+                            maskCredentialValue(nestedEntry.getKey(), String.valueOf(nestedEntry.getValue())), 
+                            nestedEntry.getValue().getClass().getSimpleName());
+                    }
+                } else if (value instanceof java.util.List) {
+                    logger.info("Credential '{}': array with {} elements", entry.getKey(), ((java.util.List<?>) value).size());
+                } else {
+                    logger.info("Credential '{}': {} ({})", entry.getKey(), value, value.getClass().getSimpleName());
+                }
+            }
         }
     }
     
@@ -159,44 +182,64 @@ public class CloudFoundryServiceConfig {
         }
         
         // Log all available credentials for debugging
-        logger.debug("Searching for credential fields: {} in available fields: {}", 
+        logger.info("Searching for credential fields: {} in available fields: {}", 
             Arrays.toString(fieldNames), serviceCredentials.keySet());
         
+        // First pass: look for direct string fields at top level
         for (String fieldName : fieldNames) {
             Object value = serviceCredentials.get(fieldName);
             if (value instanceof String && !((String) value).isEmpty()) {
-                logger.debug("Found credential value for field '{}': {}", fieldName, maskCredentialValue(fieldName, (String) value));
+                logger.info("Found direct credential value for field '{}': {}", fieldName, maskCredentialValue(fieldName, (String) value));
                 return (String) value;
             }
-            // Handle nested objects - extract specific fields from complex endpoint objects
-            if (value instanceof Map && fieldName.equals("endpoint")) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> endpointMap = (Map<String, Object>) value;
-                // Try to extract api_base or openai_api_base from nested endpoint
-                for (String nestedField : new String[]{"api_base", "openai_api_base", "url", "endpoint"}) {
-                    Object nestedValue = endpointMap.get(nestedField);
+        }
+        
+        // Second pass: search in ALL nested objects for any of the field names we're looking for
+        for (String fieldName : fieldNames) {
+            for (Map.Entry<String, Object> credEntry : serviceCredentials.entrySet()) {
+                Object credValue = credEntry.getValue();
+                if (credValue instanceof Map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> nestedMap = (Map<String, Object>) credValue;
+                    logger.info("Searching nested object '{}' for field '{}'", credEntry.getKey(), fieldName);
+                    
+                    // Direct match in nested object
+                    Object nestedValue = nestedMap.get(fieldName);
                     if (nestedValue instanceof String && !((String) nestedValue).isEmpty()) {
-                        logger.debug("Found nested credential value for field '{}' in endpoint object: {}", nestedField, maskCredentialValue(nestedField, (String) nestedValue));
+                        logger.info("Found nested credential value for field '{}' in '{}' object: {}", 
+                            fieldName, credEntry.getKey(), maskCredentialValue(fieldName, (String) nestedValue));
                         return (String) nestedValue;
+                    }
+                    
+                    // Try case-insensitive match in nested object
+                    for (Map.Entry<String, Object> nestedEntry : nestedMap.entrySet()) {
+                        if (nestedEntry.getKey().toLowerCase().equals(fieldName.toLowerCase()) &&
+                            nestedEntry.getValue() instanceof String && 
+                            !((String) nestedEntry.getValue()).isEmpty()) {
+                            logger.info("Found nested credential value for field '{}' (case variation '{}') in '{}' object: {}", 
+                                fieldName, nestedEntry.getKey(), credEntry.getKey(), 
+                                maskCredentialValue(fieldName, (String) nestedEntry.getValue()));
+                            return (String) nestedEntry.getValue();
+                        }
                     }
                 }
             }
         }
         
-        // Try case-insensitive search
+        // Third pass: try case-insensitive search at top level
         for (String fieldName : fieldNames) {
             for (Map.Entry<String, Object> entry : serviceCredentials.entrySet()) {
                 if (entry.getKey().toLowerCase().equals(fieldName.toLowerCase())) {
                     Object value = entry.getValue();
                     if (value instanceof String && !((String) value).isEmpty()) {
-                        logger.debug("Found credential value for field '{}' (case-insensitive): {}", fieldName, maskCredentialValue(fieldName, (String) value));
+                        logger.info("Found credential value for field '{}' (case-insensitive): {}", fieldName, maskCredentialValue(fieldName, (String) value));
                         return (String) value;
                     }
                 }
             }
         }
         
-        logger.debug("No value found for any of the credential fields: {}", Arrays.toString(fieldNames));
+        logger.info("No value found for any of the credential fields: {}", Arrays.toString(fieldNames));
         return null;
     }
     

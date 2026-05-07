@@ -56,20 +56,53 @@ public class LLMServiceClient {
             logger.info("Available service credential fields: [{}]", String.join(", ", allCreds.keySet()));
         }
         
-        // Extract API key from various possible field names
-        this.apiKey = serviceConfig.getCredentialValue("api_key", "apikey", "key", "token", "access_token", "auth_token");
+        // Extract API key from various possible field names - works for both old and new formats
+        this.apiKey = serviceConfig.getCredentialValue("api_key", "apikey", "key", "token", "access_token", "auth_token", 
+                                                       "apiKey", "API_KEY", "client_secret", "clientSecret", "bearer_token");
         logger.info("API key found: {}", this.apiKey != null ? "[PRESENT]" : "[NOT FOUND]");
         
-        // Extract base URL - try many variations including api_base which is what this service uses
-        this.baseUrl = serviceConfig.getCredentialValue("api_base", "url", "endpoint", "base_url", "api_url", "host", "server_url", "service_url", "inference_endpoint", "openai_api_base");
+        // Extract base URL - prioritize openai_api_base for OpenAI compatibility, then api_base
+        // This handles both old format (top-level api_base) and new format (nested endpoint.api_base/openai_api_base)
+        this.baseUrl = serviceConfig.getCredentialValue("openai_api_base", "api_base", "url", "endpoint", 
+                                                        "base_url", "api_url", "host", "server_url", "service_url", "inference_endpoint");
         logger.info("Base URL found: {}", this.baseUrl != null ? maskSensitiveUrl(this.baseUrl) : "[NOT FOUND]");
         
-        // Extract model name
-        String modelFromService = serviceConfig.getCredentialValue("model", "model_name", "deployment_name", "model_id");
+        // Extract model name - check model_name first (old format), then name field (new format), then other variations
+        String modelFromService = serviceConfig.getCredentialValue("model_name", "name", "model", "deployment_name", 
+                                                                   "model_id", "modelName", "MODEL", "deployment", "engine");
         if (modelFromService != null && !modelFromService.isEmpty()) {
-            this.modelName = modelFromService;
+            // Check if the model name looks like a URL path deployment ID (which should be ignored)
+            if (modelFromService.startsWith("chat-and-tools-model-") && modelFromService.length() > 25) {
+                // This looks like a deployment ID from the URL path, not an actual model name - ignore it
+                logger.info("Ignoring deployment ID '{}' - will use appropriate default for GenAI proxy", modelFromService);
+            } else {
+                // Use the actual model name from service credentials
+                logger.info("Using model name from service: '{}'", modelFromService);
+                this.modelName = modelFromService;
+            }
         }
-        logger.info("Model name found: {}", this.modelName);
+        
+        // For GenAI proxy services without explicit model name, discover available models
+        if (baseUrl != null && baseUrl.toLowerCase().contains("genai-proxy")) {
+            // Check if we still have the default model (meaning no valid model was found in credentials)
+            if (this.modelName.equals("gpt-4o")) {
+                // First try environment variable override
+                String genaiProxyModel = System.getenv("GENAI_PROXY_MODEL");
+                if (genaiProxyModel != null && !genaiProxyModel.isEmpty()) {
+                    this.modelName = genaiProxyModel;
+                    logger.info("GenAI proxy detected - using model from GENAI_PROXY_MODEL env var: '{}'", this.modelName);
+                } else {
+                    // Discover available models from the proxy
+                    String discoveredModel = discoverAvailableModel();
+                    if (discoveredModel != null) {
+                        this.modelName = discoveredModel;
+                        logger.info("GenAI proxy detected - discovered available model: '{}'", this.modelName);
+                    }
+                }
+            }
+        }
+        
+        logger.info("Final model name: {}", this.modelName);
         
         this.isServiceBound = true;
         logger.info("Configured from service binding - URL: {}, Model: {}, API Key: {}", 
@@ -136,7 +169,10 @@ public class LLMServiceClient {
     private String determineEndpoint() {
         String normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         
-        if (baseUrl.toLowerCase().contains("openai") || baseUrl.toLowerCase().contains("azure")) {
+        // Check for GenAI proxy service first - uses OpenAI-compatible endpoints
+        if (baseUrl.toLowerCase().contains("genai-proxy")) {
+            return normalizedBaseUrl + "/chat/completions";
+        } else if (baseUrl.toLowerCase().contains("openai") || baseUrl.toLowerCase().contains("azure")) {
             return normalizedBaseUrl + "/chat/completions";
         } else {
             // Generic LLM service format
@@ -150,8 +186,10 @@ public class LLMServiceClient {
         payload.put("max_tokens", maxTokens);
         payload.put("temperature", temperature);
         
-        if (baseUrl.toLowerCase().contains("openai") || baseUrl.toLowerCase().contains("azure")) {
-            // Chat completions format
+        if (baseUrl.toLowerCase().contains("genai-proxy") || 
+            baseUrl.toLowerCase().contains("openai") || 
+            baseUrl.toLowerCase().contains("azure")) {
+            // Chat completions format for GenAI proxy, OpenAI, and Azure
             Map<String, String> message = new HashMap<>();
             message.put("role", "user");
             message.put("content", prompt);
@@ -256,5 +294,64 @@ public class LLMServiceClient {
             // If URL parsing fails, return a generic masked version
             return url.replaceAll("(https?://[^/]+).*", "$1/***");
         }
+    }
+    
+    /**
+     * Discover available models by querying the GenAI proxy's /openai/v1/models endpoint
+     * @return the first available model, or null if discovery fails
+     */
+    private String discoverAvailableModel() {
+        if (baseUrl == null || apiKey == null) {
+            logger.debug("Cannot discover models - missing baseUrl or apiKey");
+            return null;
+        }
+        
+        try {
+            String modelsEndpoint = baseUrl.endsWith("/") ? baseUrl + "v1/models" : baseUrl + "/v1/models";
+            logger.info("Attempting to discover available models from: {}", maskSensitiveUrl(modelsEndpoint));
+            
+            Mono<String> responseMono = webClient.get()
+                    .uri(modelsEndpoint)
+                    .headers(headers -> {
+                        if (apiKey != null && !apiKey.isEmpty()) {
+                            headers.setBearerAuth(apiKey);
+                        }
+                    })
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .timeout(java.time.Duration.ofSeconds(10)); // Shorter timeout for discovery
+            
+            String responseBody = responseMono.block();
+            
+            if (responseBody != null) {
+                JsonNode response = objectMapper.readTree(responseBody);
+                JsonNode data = response.get("data");
+                
+                if (data != null && data.isArray() && data.size() > 0) {
+                    // Get the first available model
+                    JsonNode firstModel = data.get(0);
+                    String modelId = firstModel.get("id").asText();
+                    
+                    logger.info("Discovered {} available models, using first one: '{}'", data.size(), modelId);
+                    
+                    // Log all available models for debugging
+                    StringBuilder availableModels = new StringBuilder();
+                    for (JsonNode model : data) {
+                        if (availableModels.length() > 0) availableModels.append(", ");
+                        availableModels.append(model.get("id").asText());
+                    }
+                    logger.info("All available models: [{}]", availableModels.toString());
+                    
+                    return modelId;
+                } else {
+                    logger.warn("Models endpoint returned no models in data array");
+                }
+            }
+            
+        } catch (Exception e) {
+            logger.warn("Failed to discover available models from GenAI proxy: {}", e.getMessage());
+        }
+        
+        return null;
     }
 }
