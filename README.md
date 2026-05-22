@@ -372,4 +372,4 @@ curl https://your-app-route/actuator/scheduledtasks
 
 ## 📄 License
 
-This project is part of the Cloud Foundry LLM application suite. See the main repository for licensing information.
+See the main repository for licensing information.
